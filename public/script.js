@@ -2,6 +2,8 @@
  * Realtime API WebSocket İstemcisi
  * Kullanıcı ve yapay zeka arasında kesintisiz ses etkileşimi sağlar
  */
+
+// ----- TEMEL İŞLEVLER -----
 const $ = (id) => document.getElementById(id);
 const log = (...m) => {
   console.log(...m);
@@ -12,21 +14,21 @@ const log = (...m) => {
 const b64ToBuf = (b64) =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
 
-/* ---- WS Bağlantısı ---------- */
+// ----- WEBSOCKET BAĞLANTI YÖNETİMİ -----
 let ws;
 let reconnectAttempts = 0;
 const maxReconnectAttempts = 5;
-const reconnectBackoff = [1000, 2000, 3000, 5000, 8000]; // Geri çekilme stratejisi
+const reconnectBackoff = [1000, 2000, 3000, 5000, 8000];
 
 function connectWS() {
   if (ws && ws.readyState === WebSocket.CONNECTING) {
     log("⏳ Bağlantı zaten kuruluyor, lütfen bekleyin...");
     return;
   }
-  
+
   $("status").textContent = "Bağlanıyor...";
   $("status").className = "disconnected";
-  
+
   ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/client`);
 
   ws.onopen = () => {
@@ -52,7 +54,7 @@ function connectWS() {
 
     if (reconnectAttempts < maxReconnectAttempts) {
       const delayMs = reconnectBackoff[Math.min(reconnectAttempts, reconnectBackoff.length - 1)];
-      log(`🔄 ${delayMs/1000} saniye içinde yeniden bağlanılacak... (Deneme ${reconnectAttempts + 1}/${maxReconnectAttempts})`);
+      log(`🔄 ${delayMs / 1000} saniye içinde yeniden bağlanılacak... (Deneme ${reconnectAttempts + 1}/${maxReconnectAttempts})`);
       setTimeout(connectWS, delayMs);
       reconnectAttempts++;
     } else {
@@ -68,7 +70,7 @@ function connectWS() {
   ws.onmessage = handleMessage;
 }
 
-/* ---- Global Değişkenler ---------- */
+// ----- GLOBAL DEĞİŞKENLER -----
 let audioCtx, workletReady = false;
 let micStream, micNode, recording = false, responding = false;
 let sessionId = null;
@@ -76,12 +78,12 @@ let modelSpeaking = false;
 let lastUserSpeechTime = 0;
 let userWasInterrupted = false;
 
-// Gerçek zamanlı ses akışı için değişkenler
 let audioSourceNodes = [];
 let scheduledEndTime = 0;
 let firstChunkPlayed = false;
+let ambientEnabled = true;
 
-// Oturum yapılandırması
+// ----- OTURUM YAPILANDIRMASI -----
 const sessionConfig = {
   input_audio_format: "pcm16",
   output_audio_format: "pcm16",
@@ -106,39 +108,33 @@ const sessionConfig = {
     Yanıtın araya girme nedeniyle kesilirse, kaldığın yerden değil, yeni soruya odaklanarak devam et.`
 };
 
-/**
- * OpenAI Olay İşleyicisi
- */
+// ----- OPENAI MESAJ İŞLEME -----
 async function handleMessage(e) {
   try {
     const txt = typeof e.data === "string" ? e.data : await e.data.text();
     const ev = JSON.parse(txt);
 
-    // Oturum oluşturuldu
     if (ev.type === "session.created") {
       sessionId = ev.session.id;
       log(`✅ Oturum oluşturuldu: ${sessionId.slice(0, 8)}...`);
-      
+
       ws.send(JSON.stringify({
         type: "session.update",
         session: sessionConfig
       }));
       log("✅ Oturum yapılandırıldı");
     }
-    
-    // Oturum güncellendi
+
     if (ev.type === "session.updated") {
       log("✅ Oturum ayarları güncellendi");
     }
 
-    // Konuşma başladı
     if (ev.type === "input_audio_buffer.speech_started") {
       lastUserSpeechTime = Date.now();
       log("🎤 Konuşma başladı");
       $("status").textContent = "Dinleniyor...";
       $("status").className = "listening";
-      
-      // Kullanıcı modelin konuşmasını kestiyse
+
       if (modelSpeaking) {
         userWasInterrupted = true;
         log("⚠️ Kullanıcı modelin konuşmasını kesti");
@@ -146,44 +142,39 @@ async function handleMessage(e) {
       }
     }
 
-    // Konuşma bitti
     if (ev.type === "input_audio_buffer.speech_stopped") {
       const duration = ((Date.now() - lastUserSpeechTime) / 1000).toFixed(1);
       log(`🛑 Konuşma bitti (${duration}s)`);
       $("status").textContent = "İşleniyor...";
       $("status").className = "thinking";
     }
-    
-    // Yanıt oluşturuluyor
+
     if (ev.type === "response.created") {
       responding = true;
       firstChunkPlayed = false;
       scheduledEndTime = 0;
       log("⚙️ Yanıt oluşturuluyor...");
     }
-    
-    // Transkript geldi
+
     if (ev.type === "response.audio_transcript.delta") {
       if (ev.delta && ev.delta.trim()) {
         log(`📝 Transkript: "${ev.delta}"`);
       }
     }
 
-    // Ses parçası geldi
     if (ev.type === "response.audio.delta") {
       if (!modelSpeaking) {
         modelSpeaking = true;
         $("status").textContent = "Model konuşuyor...";
       }
-      
+
       const audioBuffer = b64ToBuf(ev.delta);
       playAudioChunk(audioBuffer);
     }
 
-    // Ses bitti
     if (ev.type === "response.audio.done") {
       modelSpeaking = false;
-      
+
       if (userWasInterrupted) {
         log("⏭️ Model yanıtı kesildi");
         userWasInterrupted = false;
@@ -192,14 +183,13 @@ async function handleMessage(e) {
       }
     }
 
-    // Yanıt tamamlandı
     if (ev.type === "response.done") {
       responding = false;
       modelSpeaking = false;
       userWasInterrupted = false;
-      
+
       log("✅ Yanıt tamamlandı");
-      
+
       if (recording) {
         $("status").textContent = "Dinleniyor...";
         $("status").className = "listening";
@@ -210,15 +200,27 @@ async function handleMessage(e) {
       }
     }
 
-    // Hata mesajları
+    if (ev.type === "ambient.status") {
+      ambientEnabled = ev.enabled;
+      updateAmbientUI(ev);
+    }
+
+    if (ev.type === "ambient.switched") {
+      log(`🔊 Ambiyans sesi değiştirildi: ${ev.current}`);
+    }
+
+    if (ev.type === "ambient.levels") {
+      log(`🔊 Ambiyans seviyesi: ${Math.round(ev.levels.ambient * 100)}%, Ses seviyesi: ${Math.round(ev.levels.voice * 100)}%`);
+    }
+
     if (ev.type === "error") {
       const errorMsg = ev.error?.message || ev.message || "Bilinmeyen hata";
       log("⛔ HATA: " + errorMsg);
-      
+
       if (recording) {
         stopMic();
       }
-      
+
       responding = false;
       modelSpeaking = false;
       $("startBtn").disabled = false;
@@ -231,63 +233,94 @@ async function handleMessage(e) {
   }
 }
 
-/**
- * Ses işleme için AudioContext oluşturur veya mevcut olanı döndürür
- */
+// ----- AMBİYANS KONTROL FONKSİYONLARI -----
+function updateAmbientUI(status) {
+  const ambientBtn = $("ambientBtn");
+  if (ambientBtn) {
+    ambientBtn.textContent = ambientEnabled ? "🔊 Ambiyans: Açık" : "🔇 Ambiyans: Kapalı";
+    ambientBtn.className = ambientEnabled ? "ambient-on" : "ambient-off";
+  }
+
+  if (status && status.isLoaded === false) {
+    log("⚠️ Ambiyans ses yüklenmemiş! Lütfen sunucudaki ambient klasörüne PCM16 formatında ses dosyaları ekleyin.");
+  }
+}
+
+function toggleAmbient() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "ambient.control",
+      action: "toggle"
+    }));
+  }
+}
+
+function switchAmbient() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "ambient.control",
+      action: "switch"
+    }));
+  }
+}
+
+function setAmbientLevels(ambient, voice) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "ambient.control",
+      action: "levels",
+      levels: {
+        ambient: Math.max(0, Math.min(1, ambient)),
+        voice: Math.max(0, Math.min(1, voice))
+      }
+    }));
+  }
+}
+
+// ----- SES İŞLEME FONKSİYONLARI -----
 async function ctx() {
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: 24000 });
   }
-  
+
   if (audioCtx.state === "suspended") {
     await audioCtx.resume();
   }
-  
+
   return audioCtx;
 }
 
-/**
- * Gerçek zamanlı ses oynatma
- */
 async function playAudioChunk(buffer) {
   if (userWasInterrupted || !buffer.byteLength) return;
-  
+
   try {
     const audioContext = await ctx();
-    
-    // PCM16 ses verilerini Float32'ye dönüştür
+
     const i16 = new Int16Array(buffer);
     const f32 = Float32Array.from(i16, v => v / 32768.0);
-    
-    // AudioBuffer oluştur
+
     const audioBuffer = audioContext.createBuffer(1, f32.length, 24000);
     audioBuffer.getChannelData(0).set(f32);
-    
-    // BufferSource oluştur
+
     const source = audioContext.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(audioContext.destination);
-    
-    // Kaynak düğümünü izle
+
     audioSourceNodes.push(source);
-    
-    // Akış zamanlamasını hesapla
+
     const now = audioContext.currentTime;
     const duration = audioBuffer.duration;
-    
+
     if (!firstChunkPlayed) {
-      // İlk chunk hemen başlatılır
       source.start(now);
       scheduledEndTime = now + duration;
       firstChunkPlayed = true;
       log(`🔊 Ses akışı başladı (${(buffer.byteLength / 1024).toFixed(1)} KB)`);
     } else {
-      // Sonraki chunk'lar kesintisiz akış için zamanlanır
       source.start(scheduledEndTime);
       scheduledEndTime += duration;
     }
-    
-    // Kaynak tamamlandığında temizle
+
     source.onended = () => {
       const index = audioSourceNodes.indexOf(source);
       if (index !== -1) {
@@ -299,9 +332,6 @@ async function playAudioChunk(buffer) {
   }
 }
 
-/**
- * Tüm aktif ses oynatmalarını durdur
- */
 function stopAllAudio() {
   audioSourceNodes.forEach(source => {
     try {
@@ -310,18 +340,15 @@ function stopAllAudio() {
       // Halihazırda durmuş olabilir
     }
   });
-  
+
   audioSourceNodes = [];
   scheduledEndTime = 0;
   firstChunkPlayed = false;
 }
 
-/**
- * AudioWorklet yükleyici
- */
 async function loadWorklet() {
   if (workletReady) return;
-  
+
   try {
     await ctx();
     await audioCtx.audioWorklet.addModule("pcm16-worklet.js");
@@ -334,23 +361,19 @@ async function loadWorklet() {
   }
 }
 
-/**
- * Mikrofonu başlat
- */
+// ----- MİKROFON KONTROL FONKSİYONLARI -----
 async function startMic() {
   try {
     if (recording) return;
-    
-    // Model konuşuyorsa kes
+
     if (modelSpeaking) {
       userWasInterrupted = true;
       log("⏺️ Kullanıcı konuşmaya başladı, model yanıtı kesiliyor");
       stopAllAudio();
     }
-    
+
     await loadWorklet();
-    
-    // Mikrofon erişimi
+
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -359,11 +382,11 @@ async function startMic() {
         channelCount: 1
       }
     });
-    
+
     const src = audioCtx.createMediaStreamSource(micStream);
     micNode = new AudioWorkletNode(audioCtx, "pcm16");
     src.connect(micNode);
-    
+
     micNode.port.onmessage = (e) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(
@@ -374,10 +397,9 @@ async function startMic() {
         );
       }
     };
-    
+
     recording = true;
-    
-    // UI güncellemeleri
+
     $("startBtn").disabled = true;
     $("stopBtn").disabled = false;
     $("status").textContent = "Dinleniyor...";
@@ -391,26 +413,22 @@ async function startMic() {
   }
 }
 
-/**
- * Mikrofonu durdur
- */
 function stopMic() {
   try {
     if (!recording) return;
-    
+
     if (micStream) {
       micStream.getTracks().forEach(t => t.stop());
     }
-    
+
     if (micNode) {
       micNode.disconnect();
     }
-    
+
     recording = false;
-    
-    // UI güncellemeleri
+
     $("stopBtn").disabled = true;
-    
+
     if (modelSpeaking) {
       $("status").textContent = "Model konuşuyor...";
       $("startBtn").disabled = true;
@@ -419,7 +437,7 @@ function stopMic() {
       $("status").className = "connected";
       $("startBtn").disabled = false;
     }
-    
+
     log("🛑 Kayıt bitti");
   } catch (err) {
     log("⛔ Mikrofon durdurma hatası: " + err.message);
@@ -427,50 +445,68 @@ function stopMic() {
   }
 }
 
-/**
- * Oturumu sıfırla
- */
+// ----- OTURUM YÖNETİMİ -----
 function resetSession() {
   if (recording) {
     stopMic();
   }
-  
+
   stopAllAudio();
-  
+
   responding = false;
   modelSpeaking = false;
   userWasInterrupted = false;
-  
+
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.close(1000, "Kullanıcı oturumu yeniledi");
   }
-  
+
   $("status").textContent = "Yeniden bağlanıyor...";
   $("status").className = "disconnected";
   $("startBtn").disabled = true;
   $("stopBtn").disabled = true;
-  
+
   log("🔄 Oturum yenileniyor...");
   setTimeout(connectWS, 1000);
 }
 
-/**
- * Sayfa yükleme
- */
+// ----- SAYFA YÜKLEME VE OLAY DİNLEYİCİLERİ -----
 window.onload = () => {
   connectWS();
   $("startBtn").onclick = startMic;
   $("stopBtn").onclick = stopMic;
   $("resetBtn").onclick = resetSession;
-  
-  // Safari için AudioContext izni
+
+  if ($("ambientBtn")) {
+    $("ambientBtn").onclick = toggleAmbient;
+  }
+
+  if ($("switchAmbientBtn")) {
+    $("switchAmbientBtn").onclick = switchAmbient;
+  }
+
+  if ($("ambientVolume")) {
+    $("ambientVolume").oninput = e => {
+      const ambient = parseFloat(e.target.value) / 100;
+      const voice = $("voiceVolume") ? parseFloat($("voiceVolume").value) / 100 : 0.9;
+      setAmbientLevels(ambient, voice);
+    };
+  }
+
+  if ($("voiceVolume")) {
+    $("voiceVolume").oninput = e => {
+      const voice = parseFloat(e.target.value) / 100;
+      const ambient = $("ambientVolume") ? parseFloat($("ambientVolume").value) / 100 : 0.15;
+      setAmbientLevels(ambient, voice);
+    };
+  }
+
   document.addEventListener('click', () => {
     if (audioCtx && audioCtx.state === 'suspended') {
       audioCtx.resume();
     }
   }, { once: true });
-  
-  // Sayfa kapanırken temizlik
+
   window.addEventListener('beforeunload', () => {
     if (recording) {
       stopMic();

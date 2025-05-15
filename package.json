@@ -1,17 +1,31 @@
 {
-  "name": "realtime-ws-bot",
+  "name": "realtime-ambient-assistant",
   "version": "1.0.0",
+  "description": "OpenAI Realtime API ile ofis ortamı ambiyansı eklenmiş yapay zeka asistanı",
+  "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
+  "keywords": [
+    "openai",
+    "realtime",
+    "audio",
+    "ambient",
+    "voice-assistant"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "dotenv": "^16.4.5",
-    "express": "^5.1.0",
-    "ws": "^8.17.0"
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "ws": "^8.14.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
