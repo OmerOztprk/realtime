@@ -1,6 +1,7 @@
-/*=====================================================
-   Basitleştirilmiş Realtime API WebSocket İstemcisi
-   ======================================================= */
+/**
+ * Realtime API WebSocket İstemcisi
+ * Kullanıcı ve yapay zeka arasında kesintisiz ses etkileşimi sağlar
+ */
 const $ = (id) => document.getElementById(id);
 const log = (...m) => {
   console.log(...m);
@@ -11,12 +12,21 @@ const log = (...m) => {
 const b64ToBuf = (b64) =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
 
-/* ------ WS Bağlantısı ---------- */
+/* ---- WS Bağlantısı ---------- */
 let ws;
 let reconnectAttempts = 0;
 const maxReconnectAttempts = 5;
+const reconnectBackoff = [1000, 2000, 3000, 5000, 8000]; // Geri çekilme stratejisi
 
 function connectWS() {
+  if (ws && ws.readyState === WebSocket.CONNECTING) {
+    log("⏳ Bağlantı zaten kuruluyor, lütfen bekleyin...");
+    return;
+  }
+  
+  $("status").textContent = "Bağlanıyor...";
+  $("status").className = "disconnected";
+  
   ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/client`);
 
   ws.onopen = () => {
@@ -28,63 +38,77 @@ function connectWS() {
     $("stopBtn").disabled = true;
   };
 
-  ws.onclose = () => {
-    log("🔌 Sunucu bağlantısı kesildi");
+  ws.onclose = (event) => {
+    const wasClean = event.wasClean;
+    log(`🔌 Sunucu bağlantısı kesildi ${wasClean ? '(temiz kapatma)' : '(beklenmeyen kapanma)'}`);
     $("status").textContent = "Bağlantı kesildi";
     $("status").className = "disconnected";
     $("startBtn").disabled = true;
     $("stopBtn").disabled = true;
 
+    if (recording) {
+      stopMic();
+    }
+
     if (reconnectAttempts < maxReconnectAttempts) {
+      const delayMs = reconnectBackoff[Math.min(reconnectAttempts, reconnectBackoff.length - 1)];
+      log(`🔄 ${delayMs/1000} saniye içinde yeniden bağlanılacak... (Deneme ${reconnectAttempts + 1}/${maxReconnectAttempts})`);
+      setTimeout(connectWS, delayMs);
       reconnectAttempts++;
-      const delay = Math.min(1000 * reconnectAttempts, 5000);
-      log(`🔄 ${delay/1000} saniye içinde yeniden bağlanılacak...`);
-      setTimeout(connectWS, delay);
     } else {
-      log("❌ Yeniden bağlanma denemesi başarısız oldu. Sayfayı yenileyin.");
+      log("❌ Yeniden bağlanma denemeleri başarısız oldu. Sayfayı yenileyin.");
     }
   };
 
   ws.onerror = (err) => {
-    log("❌ WebSocket hatası:", err);
+    log("❌ WebSocket hatası");
+    console.error("WebSocket hatası:", err);
   };
 
   ws.onmessage = handleMessage;
 }
 
-/* ------ Global Değişkenler ---------- */
+/* ---- Global Değişkenler ---------- */
 let audioCtx, workletReady = false;
 let micStream, micNode, recording = false, responding = false;
-let deltaBuffers = [];
 let sessionId = null;
 let modelSpeaking = false;
+let lastUserSpeechTime = 0;
+let userWasInterrupted = false;
 
-// Sabit VAD ve ses ayarları
+// Gerçek zamanlı ses akışı için değişkenler
+let audioSourceNodes = [];
+let scheduledEndTime = 0;
+let firstChunkPlayed = false;
+
+// Oturum yapılandırması
 const sessionConfig = {
   input_audio_format: "pcm16",
   output_audio_format: "pcm16",
   voice: "shimmer",
   turn_detection: {
     type: "server_vad",
-    threshold: 0.6,
+    threshold: 0.7,
     prefix_padding_ms: 300,
     silence_duration_ms: 600,
     create_response: true,
     interrupt_response: true
   },
   input_audio_noise_reduction: {
-    type: "near_field"
+    type: "far_field"
   },
   instructions: `
     Sen faydalı ve profesyonel bir Türkçe konuşan asistan olarak görev yapıyorsun.
     Sadece kullanıcının sorduğu soruları veya belirttiği konuları ele al.
     Cevaplarını kısa, özlü ve net tut. Her zaman Türkçe konuş ve nazik ol.
-    Eğer kullanıcının ne dediğini anlayamazsan, daha fazla bilgi iste.`
+    Kullanıcı konuşurken sözünü keserse, hemen durmalı ve dinlemelisin.
+    Eğer kullanıcının ne dediğini anlayamazsan, daha fazla bilgi iste.
+    Yanıtın araya girme nedeniyle kesilirse, kaldığın yerden değil, yeni soruya odaklanarak devam et.`
 };
 
-/*=====================================================
-   OpenAI Olay İşleyicisi
-   ======================================================= */
+/**
+ * OpenAI Olay İşleyicisi
+ */
 async function handleMessage(e) {
   try {
     const txt = typeof e.data === "string" ? e.data : await e.data.text();
@@ -93,48 +117,95 @@ async function handleMessage(e) {
     // Oturum oluşturuldu
     if (ev.type === "session.created") {
       sessionId = ev.session.id;
-      log(`✅ Oturum oluşturuldu`);
+      log(`✅ Oturum oluşturuldu: ${sessionId.slice(0, 8)}...`);
       
-      // Oturum yapılandırması
-      ws.send(
-        JSON.stringify({
-          type: "session.update",
-          session: sessionConfig
-        })
-      );
+      ws.send(JSON.stringify({
+        type: "session.update",
+        session: sessionConfig
+      }));
       log("✅ Oturum yapılandırıldı");
+    }
+    
+    // Oturum güncellendi
+    if (ev.type === "session.updated") {
+      log("✅ Oturum ayarları güncellendi");
     }
 
     // Konuşma başladı
     if (ev.type === "input_audio_buffer.speech_started") {
+      lastUserSpeechTime = Date.now();
       log("🎤 Konuşma başladı");
+      $("status").textContent = "Dinleniyor...";
+      $("status").className = "listening";
+      
+      // Kullanıcı modelin konuşmasını kestiyse
+      if (modelSpeaking) {
+        userWasInterrupted = true;
+        log("⚠️ Kullanıcı modelin konuşmasını kesti");
+        stopAllAudio();
+      }
     }
 
     // Konuşma bitti
     if (ev.type === "input_audio_buffer.speech_stopped") {
-      log("🛑 Konuşma bitti");
+      const duration = ((Date.now() - lastUserSpeechTime) / 1000).toFixed(1);
+      log(`🛑 Konuşma bitti (${duration}s)`);
+      $("status").textContent = "İşleniyor...";
+      $("status").className = "thinking";
+    }
+    
+    // Yanıt oluşturuluyor
+    if (ev.type === "response.created") {
+      responding = true;
+      firstChunkPlayed = false;
+      scheduledEndTime = 0;
+      log("⚙️ Yanıt oluşturuluyor...");
+    }
+    
+    // Transkript geldi
+    if (ev.type === "response.audio_transcript.delta") {
+      if (ev.delta && ev.delta.trim()) {
+        log(`📝 Transkript: "${ev.delta}"`);
+      }
     }
 
-    // Yanıt ses parçası geldi
+    // Ses parçası geldi
     if (ev.type === "response.audio.delta") {
-      modelSpeaking = true;
-      deltaBuffers.push(b64ToBuf(ev.delta));
+      if (!modelSpeaking) {
+        modelSpeaking = true;
+        $("status").textContent = "Model konuşuyor...";
+      }
+      
+      const audioBuffer = b64ToBuf(ev.delta);
+      playAudioChunk(audioBuffer);
     }
 
-    // Yanıttaki ses bitti
+    // Ses bitti
     if (ev.type === "response.audio.done") {
       modelSpeaking = false;
-      playCombined(deltaBuffers);
-      deltaBuffers = [];
+      
+      if (userWasInterrupted) {
+        log("⏭️ Model yanıtı kesildi");
+        userWasInterrupted = false;
+      } else {
+        log("✅ Ses akışı tamamlandı");
+      }
     }
 
-    // Yanıt tamamen bitti
+    // Yanıt tamamlandı
     if (ev.type === "response.done") {
       responding = false;
       modelSpeaking = false;
+      userWasInterrupted = false;
+      
       log("✅ Yanıt tamamlandı");
       
-      if (!recording) {
+      if (recording) {
+        $("status").textContent = "Dinleniyor...";
+        $("status").className = "listening";
+      } else {
+        $("status").textContent = "Bağlı - Bekleniyor";
+        $("status").className = "connected";
         $("startBtn").disabled = false;
       }
     }
@@ -147,8 +218,12 @@ async function handleMessage(e) {
       if (recording) {
         stopMic();
       }
+      
       responding = false;
+      modelSpeaking = false;
       $("startBtn").disabled = false;
+      $("status").textContent = "Bağlı";
+      $("status").className = "connected";
     }
   } catch (error) {
     log("⛔ Mesaj işleme hatası: " + error.message);
@@ -156,9 +231,9 @@ async function handleMessage(e) {
   }
 }
 
-/*=====================================================
-   Ses Oynatma ve İşleme
-   ======================================================= */
+/**
+ * Ses işleme için AudioContext oluşturur veya mevcut olanı döndürür
+ */
 async function ctx() {
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: 24000 });
@@ -171,41 +246,79 @@ async function ctx() {
   return audioCtx;
 }
 
-function playCombined(buffArr) {
-  if (!buffArr.length) return;
+/**
+ * Gerçek zamanlı ses oynatma
+ */
+async function playAudioChunk(buffer) {
+  if (userWasInterrupted || !buffer.byteLength) return;
   
-  const totalBytes = buffArr.reduce((t, b) => t + b.byteLength, 0);
-  const combined = new Uint8Array(totalBytes);
-  let offset = 0;
-  
-  for (const b of buffArr) {
-    combined.set(new Uint8Array(b), offset);
-    offset += b.byteLength;
+  try {
+    const audioContext = await ctx();
+    
+    // PCM16 ses verilerini Float32'ye dönüştür
+    const i16 = new Int16Array(buffer);
+    const f32 = Float32Array.from(i16, v => v / 32768.0);
+    
+    // AudioBuffer oluştur
+    const audioBuffer = audioContext.createBuffer(1, f32.length, 24000);
+    audioBuffer.getChannelData(0).set(f32);
+    
+    // BufferSource oluştur
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioContext.destination);
+    
+    // Kaynak düğümünü izle
+    audioSourceNodes.push(source);
+    
+    // Akış zamanlamasını hesapla
+    const now = audioContext.currentTime;
+    const duration = audioBuffer.duration;
+    
+    if (!firstChunkPlayed) {
+      // İlk chunk hemen başlatılır
+      source.start(now);
+      scheduledEndTime = now + duration;
+      firstChunkPlayed = true;
+      log(`🔊 Ses akışı başladı (${(buffer.byteLength / 1024).toFixed(1)} KB)`);
+    } else {
+      // Sonraki chunk'lar kesintisiz akış için zamanlanır
+      source.start(scheduledEndTime);
+      scheduledEndTime += duration;
+    }
+    
+    // Kaynak tamamlandığında temizle
+    source.onended = () => {
+      const index = audioSourceNodes.indexOf(source);
+      if (index !== -1) {
+        audioSourceNodes.splice(index, 1);
+      }
+    };
+  } catch (error) {
+    console.error("Ses chunk oynatma hatası:", error);
   }
-
-  ctx().then(() => {
-    // PCM16 formatından Float32'ye dönüştürme
-    const i16 = new Int16Array(combined.buffer);
-    const f32 = Float32Array.from(i16, (v) => v / 32768.0);
-    
-    // AudioBuffer oluşturma ve oynatma
-    const aBuf = audioCtx.createBuffer(1, f32.length, 24000);
-    aBuf.getChannelData(0).set(f32);
-    const src = audioCtx.createBufferSource();
-    src.buffer = aBuf;
-    src.connect(audioCtx.destination);
-    src.start();
-    
-    const sizeKB = (totalBytes / 1024).toFixed(1);
-    log("🔊 Ses oynatıldı (" + sizeKB + " KB)");
-  }).catch(err => {
-    log("⛔ Ses oynatma hatası: " + err.message);
-  });
 }
 
-/*=====================================================
-   Mikrofon Yönetimi
-   ======================================================= */
+/**
+ * Tüm aktif ses oynatmalarını durdur
+ */
+function stopAllAudio() {
+  audioSourceNodes.forEach(source => {
+    try {
+      source.stop();
+    } catch (e) {
+      // Halihazırda durmuş olabilir
+    }
+  });
+  
+  audioSourceNodes = [];
+  scheduledEndTime = 0;
+  firstChunkPlayed = false;
+}
+
+/**
+ * AudioWorklet yükleyici
+ */
 async function loadWorklet() {
   if (workletReady) return;
   
@@ -216,18 +329,23 @@ async function loadWorklet() {
     log("✅ AudioWorklet yüklendi");
   } catch (err) {
     log("⛔ AudioWorklet yükleme hatası: " + err.message);
+    console.error("AudioWorklet yükleme hatası:", err);
     throw err;
   }
 }
 
+/**
+ * Mikrofonu başlat
+ */
 async function startMic() {
   try {
     if (recording) return;
     
-    // Model konuşuyorsa bekle
+    // Model konuşuyorsa kes
     if (modelSpeaking) {
-      log("⏳ Model konuşmayı tamamlasın, sonra tekrar deneyin");
-      return;
+      userWasInterrupted = true;
+      log("⏺️ Kullanıcı konuşmaya başladı, model yanıtı kesiliyor");
+      stopAllAudio();
     }
     
     await loadWorklet();
@@ -263,13 +381,19 @@ async function startMic() {
     $("startBtn").disabled = true;
     $("stopBtn").disabled = false;
     $("status").textContent = "Dinleniyor...";
+    $("status").className = "listening";
     log("🎙️ Kayıt başladı");
   } catch (err) {
     log("⛔ Mikrofon başlatma hatası: " + err.message);
     console.error("Mikrofon başlatma hatası:", err);
+    $("status").textContent = "Mikrofon erişimi başarısız";
+    $("status").className = "disconnected";
   }
 }
 
+/**
+ * Mikrofonu durdur
+ */
 function stopMic() {
   try {
     if (!recording) return;
@@ -285,9 +409,17 @@ function stopMic() {
     recording = false;
     
     // UI güncellemeleri
-    $("startBtn").disabled = modelSpeaking;
     $("stopBtn").disabled = true;
-    $("status").textContent = "Dinleme durdu";
+    
+    if (modelSpeaking) {
+      $("status").textContent = "Model konuşuyor...";
+      $("startBtn").disabled = true;
+    } else {
+      $("status").textContent = "Bağlı";
+      $("status").className = "connected";
+      $("startBtn").disabled = false;
+    }
+    
     log("🛑 Kayıt bitti");
   } catch (err) {
     log("⛔ Mikrofon durdurma hatası: " + err.message);
@@ -295,30 +427,56 @@ function stopMic() {
   }
 }
 
-// Oturumu sıfırla
+/**
+ * Oturumu sıfırla
+ */
 function resetSession() {
   if (recording) {
     stopMic();
   }
   
+  stopAllAudio();
+  
   responding = false;
+  modelSpeaking = false;
+  userWasInterrupted = false;
   
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.close();
+    ws.close(1000, "Kullanıcı oturumu yeniledi");
   }
   
-  setTimeout(() => {
-    log("🔄 Oturum yenileniyor...");
-    connectWS();
-  }, 1000);
+  $("status").textContent = "Yeniden bağlanıyor...";
+  $("status").className = "disconnected";
+  $("startBtn").disabled = true;
+  $("stopBtn").disabled = true;
+  
+  log("🔄 Oturum yenileniyor...");
+  setTimeout(connectWS, 1000);
 }
 
-/*=====================================================
-   UI ve Sayfa Yüklenmesi
-   ======================================================= */
+/**
+ * Sayfa yükleme
+ */
 window.onload = () => {
   connectWS();
   $("startBtn").onclick = startMic;
   $("stopBtn").onclick = stopMic;
   $("resetBtn").onclick = resetSession;
+  
+  // Safari için AudioContext izni
+  document.addEventListener('click', () => {
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+  }, { once: true });
+  
+  // Sayfa kapanırken temizlik
+  window.addEventListener('beforeunload', () => {
+    if (recording) {
+      stopMic();
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.close(1000, "Sayfa kapandı");
+    }
+  });
 };
