@@ -1,17 +1,8 @@
 /* AudioWorklet: Float32 ➜ PCM16 (little‑endian) */
 class PCM16 extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    // Optimum performans için değerler
-    this.bufferSize = 512;  // Daha küçük buffer daha düşük gecikme
-    this.processorCalled = 0;
-  }
-  
   process(inputs) {
     const ch = inputs[0][0];
     if (!ch || ch.length === 0) return true;
-    
-    this.processorCalled++;
     
     // Float32 -> Int16 dönüşümü
     const pcm = new Int16Array(ch.length);
