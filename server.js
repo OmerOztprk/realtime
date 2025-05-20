@@ -58,11 +58,14 @@ wss.on("connection", (cli, req) => {
   // OpenAI bağlantısı kur
   let oai = connectToOpenAI(clientId);
 
+  // Ambiyans durumu özelliğini ekle
   activeConnections.set(clientId, {
     client: cli,
     openai: oai,
     lastActivity: Date.now(),
-    ambientEnabled: true // Varsayılan olarak ambient ses aktif
+    ambientEnabled: true,
+    ambientStreamActive: false, // Yeni özellik: aktif ambiyans akışı durumu
+    ambientInterval: null  // Yeni özellik: ambiyans gönderim aralığı referansı
   });
 
   /**
@@ -230,6 +233,49 @@ wss.on("connection", (cli, req) => {
         return;
       }
 
+      // JSON mesajı ise ve özel komut içeriyorsa işle
+      if (!isBin) {
+        try {
+          const jsonData = JSON.parse(data.toString());
+          
+          // Ambiyans kontrolü komutu
+          if (jsonData.type === "ambient.control") {
+            const conn = activeConnections.get(clientId);
+            
+            if (jsonData.action === "start" && conn && !conn.ambientStreamActive) {
+              // Ambiyans akışını başlat
+              startAmbientStream(clientId);
+              
+              // Durum bildir
+              cli.send(JSON.stringify({
+                type: "ambient.status",
+                enabled: true,
+                isActive: true,
+                isLoaded: audioMixer.isLoaded
+              }));
+              
+              return; // OpenAI'a iletme
+            }
+            else if (jsonData.action === "stop" && conn && conn.ambientStreamActive) {
+              // Ambiyans akışını durdur
+              stopAmbientStream(clientId);
+              
+              // Durum bildir
+              cli.send(JSON.stringify({
+                type: "ambient.status",
+                enabled: true,
+                isActive: false,
+                isLoaded: audioMixer.isLoaded
+              }));
+              
+              return; // OpenAI'a iletme
+            }
+          }
+        } catch (parseError) {
+          // JSON parse hatası, normal veriyi OpenAI'a ilet
+        }
+      }
+      
       oai.send(data, { binary: isBin });
       activeConnections.get(clientId).lastActivity = Date.now();
     } catch (err) {
@@ -245,7 +291,7 @@ wss.on("connection", (cli, req) => {
     }
   });
 
-  // ----- TARAYICI BAĞLANTISI KAPANDIĞINDA -----
+  // Bağlantı kapandığında ambiyans akışını durdur
   cli.on("close", (code, reason) => {
     const reasonStr = reason.toString() || "Belirtilmedi";
     console.log(`👋 Tarayıcı bağlantısı kapandı [${clientId.slice(0, 8)}]: ${code} (${reasonStr})`);
@@ -254,6 +300,9 @@ wss.on("connection", (cli, req) => {
       oai.close(1000, "Tarayıcı bağlantısı kapandı");
     }
 
+    // Ambiyans akışını durdur
+    stopAmbientStream(clientId);
+    
     activeConnections.delete(clientId);
   });
 
@@ -327,3 +376,64 @@ process.on("SIGINT", () => {
 server.listen(PORT, () =>
   console.log(`🚀 http://localhost:${PORT} adresinde çalışıyor`)
 );
+
+/**
+ * Belirli bir istemci için ambiyans ses akışını başlatır
+ */
+function startAmbientStream(clientId) {
+  const conn = activeConnections.get(clientId);
+  if (!conn || !conn.client || conn.client.readyState !== WebSocket.OPEN || conn.ambientStreamActive) {
+    return false;
+  }
+  
+  // Ambiyans ses buffer boyutu ve gönderim aralığı
+  // 24kHz için 480ms'lik buffer ~11.5KB
+  const chunkDurationMs = 480;
+  const samplesPerChunk = Math.floor((audioMixer.sampleRate * chunkDurationMs) / 1000);
+  
+  conn.ambientStreamActive = true;
+  
+  // Her aralıkta ambiyans sesi gönder
+  conn.ambientInterval = setInterval(() => {
+    if (!conn.ambientStreamActive || conn.client.readyState !== WebSocket.OPEN) {
+      stopAmbientStream(clientId);
+      return;
+    }
+    
+    try {
+      // Ses mixer'dan sadece ambiyans içeren buffer al
+      const ambientBuffer = audioMixer.getAmbientOnlyBuffer(samplesPerChunk);
+      
+      if (ambientBuffer) {
+        // Ambiyans buffer'ını Base64'e dönüştür
+        const base64Data = Buffer.from(ambientBuffer).toString('base64');
+        
+        // Ambiyans ses verisini JSON içinde gönder
+        conn.client.send(JSON.stringify({
+          type: "ambient.audio",
+          delta: base64Data
+        }));
+      }
+    } catch (err) {
+      console.error(`💥 Ambiyans ses gönderme hatası [${clientId.slice(0,8)}]: ${err.message}`);
+      stopAmbientStream(clientId);
+    }
+  }, chunkDurationMs);
+  
+  return true;
+}
+
+/**
+ * Belirli bir istemci için ambiyans ses akışını durdurur
+ */
+function stopAmbientStream(clientId) {
+  const conn = activeConnections.get(clientId);
+  if (!conn) return;
+  
+  if (conn.ambientInterval) {
+    clearInterval(conn.ambientInterval);
+    conn.ambientInterval = null;
+  }
+  
+  conn.ambientStreamActive = false;
+}

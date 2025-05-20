@@ -82,6 +82,7 @@ let audioSourceNodes = [];
 let scheduledEndTime = 0;
 let firstChunkPlayed = false;
 let ambientEnabled = true;
+let ambientStreamActive = false; // Global değişkenlere eklenecek
 
 // ----- OTURUM YAPILANDIRMASI -----
 const sessionConfig = {
@@ -202,8 +203,17 @@ async function handleMessage(e) {
 
     if (ev.type === "ambient.status") {
       ambientEnabled = ev.enabled;
-      if (ev.isLoaded === false) {
-        log("⚠️ Ambiyans ses yüklenmemiş! Lütfen sunucudaki ambient klasörüne PCM16 formatında ses dosyaları ekleyin.");
+      ambientStreamActive = ev.isActive;
+      log(`🔊 Ambiyans durumu: ${ev.enabled ? "Etkin" : "Devre dışı"}${ev.isActive ? ", Çalışıyor" : ""}`);
+    }
+
+    if (ev.type === "ambient.audio" && ev.delta) {
+      // Base64 ambient ses verisini buffer'a dönüştür
+      const buffer = b64ToBuf(ev.delta);
+      
+      // Ses verisi varsa oynat
+      if (buffer.byteLength > 0) {
+        playAudioChunk(buffer);
       }
     }
 
@@ -355,6 +365,14 @@ async function startMic() {
     $("status").textContent = "Dinleniyor...";
     $("status").className = "listening";
     log("🎙️ Kayıt başladı");
+
+    // Mikrofon başlatma başarılı olduktan sonra, ambiyans akışını başlat
+    if (ambientEnabled && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "ambient.control",
+        action: "start"
+      }));
+    }
   } catch (err) {
     log("⛔ Mikrofon başlatma hatası: " + err.message);
     console.error("Mikrofon başlatma hatası:", err);
@@ -378,6 +396,14 @@ function stopMic() {
     recording = false;
 
     $("stopBtn").disabled = true;
+
+    // Ambiyans akışını durdur
+    if (ambientEnabled && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "ambient.control",
+        action: "stop"
+      }));
+    }
 
     if (modelSpeaking) {
       $("status").textContent = "Model konuşuyor...";

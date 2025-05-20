@@ -121,6 +121,45 @@ class AudioMixer {
       return voiceBuffer;
     }
   }
+
+  /**
+   * Sadece ambiyans ses içeren bir buffer döndürür
+   * @param {number} sampleCount - İstenen örnek sayısı
+   * @returns {ArrayBuffer} PCM16 formatında sadece ambiyans içeren buffer
+   */
+  getAmbientOnlyBuffer(sampleCount) {
+    if (!this.isLoaded || this.ambientBuffers.length === 0) {
+      return null;
+    }
+    
+    try {
+      const resultBuffer = new ArrayBuffer(sampleCount * 2); // Int16 = 2 byte
+      const resultView = new DataView(resultBuffer);
+      
+      for (let i = 0; i < sampleCount; i++) {
+        if (this.ambientPosition >= this.ambientBuffers.length) {
+          this.ambientPosition = 0;
+        }
+        
+        const ambientSample = this.ambientBuffers[this.ambientPosition];
+        const ambientNormalized = (ambientSample / 32767) * this.ambientVolume;
+        
+        // -1.0 ile 1.0 arasına sınırla
+        const limitedSample = Math.max(-1.0, Math.min(1.0, ambientNormalized));
+        
+        // Int16 formatına dönüştür ve kaydet
+        const finalSample = Math.round(limitedSample * 32767);
+        resultView.setInt16(i * 2, finalSample, true);
+        
+        this.ambientPosition++;
+      }
+      
+      return resultBuffer;
+    } catch (err) {
+      console.error(`❌ Ambiyans buffer oluşturma hatası: ${err.message}`);
+      return null;
+    }
+  }
 }
 
 export default AudioMixer;
