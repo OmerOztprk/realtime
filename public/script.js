@@ -202,15 +202,9 @@ async function handleMessage(e) {
 
     if (ev.type === "ambient.status") {
       ambientEnabled = ev.enabled;
-      updateAmbientUI(ev);
-    }
-
-    if (ev.type === "ambient.switched") {
-      log(`🔊 Ambiyans sesi değiştirildi: ${ev.current}`);
-    }
-
-    if (ev.type === "ambient.levels") {
-      log(`🔊 Ambiyans seviyesi: ${Math.round(ev.levels.ambient * 100)}%, Ses seviyesi: ${Math.round(ev.levels.voice * 100)}%`);
+      if (ev.isLoaded === false) {
+        log("⚠️ Ambiyans ses yüklenmemiş! Lütfen sunucudaki ambient klasörüne PCM16 formatında ses dosyaları ekleyin.");
+      }
     }
 
     if (ev.type === "error") {
@@ -230,50 +224,6 @@ async function handleMessage(e) {
   } catch (error) {
     log("⛔ Mesaj işleme hatası: " + error.message);
     console.error("Mesaj işleme hatası:", error);
-  }
-}
-
-// ----- AMBİYANS KONTROL FONKSİYONLARI -----
-function updateAmbientUI(status) {
-  const ambientBtn = $("ambientBtn");
-  if (ambientBtn) {
-    ambientBtn.textContent = ambientEnabled ? "🔊 Ambiyans: Açık" : "🔇 Ambiyans: Kapalı";
-    ambientBtn.className = ambientEnabled ? "ambient-on" : "ambient-off";
-  }
-
-  if (status && status.isLoaded === false) {
-    log("⚠️ Ambiyans ses yüklenmemiş! Lütfen sunucudaki ambient klasörüne PCM16 formatında ses dosyaları ekleyin.");
-  }
-}
-
-function toggleAmbient() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: "ambient.control",
-      action: "toggle"
-    }));
-  }
-}
-
-function switchAmbient() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: "ambient.control",
-      action: "switch"
-    }));
-  }
-}
-
-function setAmbientLevels(ambient, voice) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: "ambient.control",
-      action: "levels",
-      levels: {
-        ambient: Math.max(0, Math.min(1, ambient)),
-        voice: Math.max(0, Math.min(1, voice))
-      }
-    }));
   }
 }
 
@@ -476,30 +426,6 @@ window.onload = () => {
   $("startBtn").onclick = startMic;
   $("stopBtn").onclick = stopMic;
   $("resetBtn").onclick = resetSession;
-
-  if ($("ambientBtn")) {
-    $("ambientBtn").onclick = toggleAmbient;
-  }
-
-  if ($("switchAmbientBtn")) {
-    $("switchAmbientBtn").onclick = switchAmbient;
-  }
-
-  if ($("ambientVolume")) {
-    $("ambientVolume").oninput = e => {
-      const ambient = parseFloat(e.target.value) / 100;
-      const voice = $("voiceVolume") ? parseFloat($("voiceVolume").value) / 100 : 0.9;
-      setAmbientLevels(ambient, voice);
-    };
-  }
-
-  if ($("voiceVolume")) {
-    $("voiceVolume").oninput = e => {
-      const voice = parseFloat(e.target.value) / 100;
-      const ambient = $("ambientVolume") ? parseFloat($("ambientVolume").value) / 100 : 0.15;
-      setAmbientLevels(ambient, voice);
-    };
-  }
 
   document.addEventListener('click', () => {
     if (audioCtx && audioCtx.state === 'suspended') {

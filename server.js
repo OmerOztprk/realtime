@@ -46,34 +46,6 @@ function heartbeat() {
 // ----- WEBSOCKET SUNUCUSU -----
 const wss = new WebSocketServer({ server, path: "/client" });
 
-// ----- AMBİYANS KONTROL API ENDPOİNTLERİ -----
-app.get('/api/ambient/status', (req, res) => {
-  res.json({
-    isLoaded: audioMixer.isLoaded,
-    current: audioMixer.ambientTypes[audioMixer.currentAmbient],
-    levels: {
-      ambient: audioMixer.ambientVolume,
-      voice: audioMixer.voiceVolume
-    }
-  });
-});
-
-app.post('/api/ambient/switch', async (req, res) => {
-  const success = await audioMixer.switchAmbient();
-  res.json({
-    success,
-    current: audioMixer.ambientTypes[audioMixer.currentAmbient]
-  });
-});
-
-app.post('/api/ambient/levels', (req, res) => {
-  const ambientVolume = parseFloat(req.query.ambient);
-  const voiceVolume = parseFloat(req.query.voice);
-
-  const levels = audioMixer.setLevels(ambientVolume, voiceVolume);
-  res.json({ success: true, levels });
-});
-
 // ----- TARAYICI BAĞLANTISI KURULDUĞUNDA -----
 wss.on("connection", (cli, req) => {
   const clientId = randomUUID();
@@ -90,7 +62,7 @@ wss.on("connection", (cli, req) => {
     client: cli,
     openai: oai,
     lastActivity: Date.now(),
-    ambientEnabled: true
+    ambientEnabled: true // Varsayılan olarak ambient ses aktif
   });
 
   /**
@@ -136,25 +108,25 @@ wss.on("connection", (cli, req) => {
             if (conn && conn.ambientEnabled && audioMixer.isLoaded) {
               try {
                 process.env.DEBUG = conn.debugMode ? "true" : "";
-                
+
                 const audioBuffer = Buffer.from(audioBase64, 'base64');
-                
+
                 if (audioBuffer.length === 0) {
                   cli.send(JSON.stringify(jsonData));
                   return;
                 }
-                
+
                 console.log(`🔊 Ses verisi alındı: ${audioBuffer.length} bayt`);
-                
+
                 const mixedBuffer = audioMixer.mixAudioBuffer(audioBuffer.buffer.slice(
-                  audioBuffer.byteOffset, 
+                  audioBuffer.byteOffset,
                   audioBuffer.byteOffset + audioBuffer.byteLength
                 ));
-                
+
                 const mixedBase64 = Buffer.from(new Uint8Array(mixedBuffer)).toString('base64');
-                
+
                 jsonData.delta = mixedBase64;
-                
+
                 cli.send(JSON.stringify(jsonData));
               } catch (mixError) {
                 console.error(`❌ Ses miksleme hatası: ${mixError.message}`);
@@ -228,51 +200,6 @@ wss.on("connection", (cli, req) => {
   // ----- TARAYICIDAN GELEN MESAJLARI İŞLEME -----
   cli.on("message", (data, isBin) => {
     try {
-      // Ambiyans kontrol mesajları
-      if (!isBin) {
-        try {
-          const jsonData = JSON.parse(data.toString());
-
-          if (jsonData.type === "ambient.control") {
-            const conn = activeConnections.get(clientId);
-            if (conn) {
-              if (jsonData.action === "toggle") {
-                conn.ambientEnabled = !conn.ambientEnabled;
-                cli.send(JSON.stringify({
-                  type: "ambient.status",
-                  enabled: conn.ambientEnabled
-                }));
-                console.log(`🔊 Ambiyans ses ${conn.ambientEnabled ? 'açıldı' : 'kapatıldı'} [${clientId.slice(0, 8)}]`);
-                return;
-              }
-
-              if (jsonData.action === "switch") {
-                audioMixer.switchAmbient().then(success => {
-                  cli.send(JSON.stringify({
-                    type: "ambient.switched",
-                    success,
-                    current: audioMixer.ambientTypes[audioMixer.currentAmbient]
-                  }));
-                });
-                return;
-              }
-
-              if (jsonData.action === "levels" && jsonData.levels) {
-                const { ambient, voice } = jsonData.levels;
-                const levels = audioMixer.setLevels(ambient, voice);
-                cli.send(JSON.stringify({
-                  type: "ambient.levels",
-                  levels
-                }));
-                return;
-              }
-            }
-          }
-        } catch (err) {
-          // JSON parse hatası
-        }
-      }
-
       // OpenAI'a mesaj gönderme
       if (!oai || oai.readyState !== WebSocket.OPEN) {
         if (!oai || oai.readyState === WebSocket.CLOSED) {
@@ -334,12 +261,11 @@ wss.on("connection", (cli, req) => {
     console.error(`❌ Tarayıcı WebSocket hatası [${clientId.slice(0, 8)}]: ${err.message}`);
   });
 
-  // Ambiyans durumunu bildir
+  // Basit ambiyans durumu bildirimi
   cli.send(JSON.stringify({
     type: "ambient.status",
     enabled: true,
-    isLoaded: audioMixer.isLoaded,
-    current: audioMixer.ambientTypes[audioMixer.currentAmbient]
+    isLoaded: audioMixer.isLoaded
   }));
 });
 

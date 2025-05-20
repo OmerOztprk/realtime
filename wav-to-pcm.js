@@ -12,11 +12,7 @@ class AudioConverter {
     this.ambientDir = options.ambientDir || path.join(process.cwd(), 'ambient');
     this.sampleRate = options.sampleRate || 24000;
     this.ffmpegPath = options.ffmpegPath || 'ffmpeg'; // FFmpeg executable path
-    this.targetFormats = [
-      { name: 'office-ambient.pcm', description: 'Genel ofis ortamı' },
-      { name: 'office-busy.pcm', description: 'Yoğun ofis ortamı' },
-      { name: 'office-quiet.pcm', description: 'Sakin ofis ortamı' }
-    ];
+    this.targetFormat = { name: 'office-ambient.pcm', description: 'Ofis ortamı' };
   }
 
   /**
@@ -25,11 +21,11 @@ class AudioConverter {
   async checkFFmpeg() {
     return new Promise((resolve) => {
       const ffmpeg = spawn(this.ffmpegPath, ['-version']);
-      
+
       ffmpeg.on('error', () => {
         resolve(false);
       });
-      
+
       ffmpeg.on('close', (code) => {
         resolve(code === 0);
       });
@@ -48,13 +44,13 @@ class AudioConverter {
         '-f', 's16le',
         outputFile
       ]);
-      
+
       let errorOutput = '';
-      
+
       ffmpeg.stderr.on('data', (data) => {
         errorOutput += data.toString();
       });
-      
+
       ffmpeg.on('close', (code) => {
         if (code === 0) {
           resolve(true);
@@ -62,7 +58,7 @@ class AudioConverter {
           reject(new Error(`FFmpeg çıkış kodu: ${code}, Hata: ${errorOutput}`));
         }
       });
-      
+
       ffmpeg.on('error', (err) => {
         reject(new Error(`FFmpeg çalıştırma hatası: ${err.message}`));
       });
@@ -81,78 +77,57 @@ class AudioConverter {
         console.error('🔍 FFmpeg\'i şuradan indirebilirsiniz: https://ffmpeg.org/download.html');
         return { success: false, error: 'FFmpeg kurulu değil' };
       }
-      
+
       // Ambient klasörünü oluştur (yoksa)
       if (!await fsExists(this.ambientDir)) {
         await fsMkdir(this.ambientDir, { recursive: true });
         console.log(`📂 Ambiyans klasörü oluşturuldu: ${this.ambientDir}`);
       }
-      
+
       // Klasördeki dosyaları kontrol et
       const files = await fsReaddir(this.ambientDir);
-      
+
       // WAV dosyalarını filtrele
-      const wavFiles = files.filter(file => 
+      const wavFiles = files.filter(file =>
         file.toLowerCase().endsWith('.wav')
       );
-      
+
       if (wavFiles.length === 0) {
         console.log(`⚠️ ${this.ambientDir} klasöründe WAV dosyası bulunamadı.`);
         return { success: false, error: 'WAV dosyası bulunamadı' };
       }
-      
-      // Mevcut PCM dosyalarını kontrol et
-      const existingPcmFiles = this.targetFormats.filter(format => 
-        files.includes(format.name)
-      ).map(format => format.name);
-      
-      // Eksik PCM dosyalarını tespit et
-      const missingPcmFiles = this.targetFormats
-        .filter(format => !existingPcmFiles.includes(format.name));
-      
-      if (missingPcmFiles.length === 0) {
-        console.log('✅ Tüm gerekli PCM dosyaları mevcut, dönüştürme atlanıyor.');
-        return { success: true, converted: 0, existing: existingPcmFiles.length };
+
+      // Mevcut PCM dosyasını kontrol et
+      const targetPcmExists = files.includes(this.targetFormat.name);
+
+      if (targetPcmExists) {
+        console.log('✅ PCM dosyası zaten mevcut, dönüştürme atlanıyor.');
+        return { success: true, converted: 0, existing: 1 };
       }
-      
-      console.log(`🔄 ${missingPcmFiles.length} adet eksik PCM dosyası dönüştürülecek...`);
-      
-      // WAV dosyalarından PCM dosyaları oluştur
-      const conversionPromises = [];
-      
-      for (let i = 0; i < Math.min(missingPcmFiles.length, wavFiles.length); i++) {
-        const targetFormat = missingPcmFiles[i];
-        const wavFile = wavFiles[i];
-        const inputPath = path.join(this.ambientDir, wavFile);
-        const outputPath = path.join(this.ambientDir, targetFormat.name);
+
+      console.log(`🔄 ${this.targetFormat.name} dosyası dönüştürülecek...`);
+
+      // İlk WAV dosyasından PCM dosyası oluştur
+      const wavFile = wavFiles[0];
+      const inputPath = path.join(this.ambientDir, wavFile);
+      const outputPath = path.join(this.ambientDir, this.targetFormat.name);
+
+      console.log(`🔄 Dönüştürülüyor: ${wavFile} → ${this.targetFormat.name} (${this.targetFormat.description})`);
+
+      try {
+        await this.convertWavToPcm(inputPath, outputPath);
+        console.log(`✅ Dönüştürme tamamlandı: ${this.targetFormat.name}`);
         
-        console.log(`🔄 Dönüştürülüyor: ${wavFile} → ${targetFormat.name} (${targetFormat.description})`);
-        
-        const conversionPromise = this.convertWavToPcm(inputPath, outputPath)
-          .then(() => {
-            console.log(`✅ Dönüştürme tamamlandı: ${targetFormat.name}`);
-            return true;
-          })
-          .catch(err => {
-            console.error(`❌ Dönüştürme hatası (${targetFormat.name}): ${err.message}`);
-            return false;
-          });
-        
-        conversionPromises.push(conversionPromise);
+        return {
+          success: true,
+          converted: 1,
+          existing: 0,
+          total: 1
+        };
+      } catch (err) {
+        console.error(`❌ Dönüştürme hatası (${this.targetFormat.name}): ${err.message}`);
+        return { success: false, error: err.message };
       }
-      
-      // Tüm dönüştürmelerin tamamlanmasını bekle
-      const results = await Promise.all(conversionPromises);
-      const successCount = results.filter(result => result).length;
-      
-      console.log(`🎉 Dönüştürme işlemi tamamlandı: ${successCount}/${conversionPromises.length} başarılı.`);
-      
-      return { 
-        success: successCount > 0, 
-        converted: successCount,
-        existing: existingPcmFiles.length,
-        total: successCount + existingPcmFiles.length
-      };
     } catch (err) {
       console.error(`❌ Dönüştürme işlemi hatası: ${err.message}`);
       return { success: false, error: err.message };

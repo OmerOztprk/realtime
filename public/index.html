@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="tr">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -82,91 +83,38 @@
     .disconnected {
       color: red;
     }
-    
+
     .listening {
       color: #1a73e8;
       animation: pulse 1.5s infinite;
     }
-    
+
     .thinking {
       color: #f9ab00;
     }
-    
+
     @keyframes pulse {
-      0% { opacity: 1; }
-      50% { opacity: 0.6; }
-      100% { opacity: 1; }
+      0% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.6;
+      }
+
+      100% {
+        opacity: 1;
+      }
     }
 
-    .ambient-controls {
-      background-color: #f8f9fa;
-      padding: 15px;
-      border-radius: 4px;
-      margin-bottom: 20px;
-      border: 1px solid #ddd;
-    }
-    
-    .ambient-controls h3 {
-      margin-top: 0;
-      margin-bottom: 10px;
-      color: #1a73e8;
-    }
-    
-    .ambient-controls .sliders {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      margin-top: 15px;
-    }
-    
-    .slider-container {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    
-    .slider-container label {
-      width: 120px;
-      font-weight: 500;
-    }
-    
-    .slider-container input {
-      flex: 1;
-    }
-    
-    .ambient-on {
-      background-color: #34a853;
-    }
-    
-    .ambient-off {
-      background-color: #ea4335;
-    }
-    
-    .secondary-btn {
-      background-color: #5f6368;
-    }
-    
-    .secondary-btn:hover:not(:disabled) {
-      background-color: #494c50;
-    }
-    
     @media (max-width: 600px) {
       .controls {
         flex-direction: column;
       }
-      
-      .slider-container {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-      
-      .slider-container label {
-        width: 100%;
-        margin-bottom: 5px;
-      }
     }
   </style>
 </head>
+
 <body>
   <h1>Realtime Ses Asistanı</h1>
 
@@ -180,53 +128,10 @@
     <button id="stopBtn" disabled aria-label="Konuşmayı bitir">⏹️ Konuşmayı Bitir</button>
     <button id="resetBtn" aria-label="Oturumu sıfırla">🔄 Oturumu Sıfırla</button>
   </div>
-  
-  <!-- Ambiyans Kontrolleri -->
-  <div class="ambient-controls">
-    <h3>Ofis Ambiyans Ayarları</h3>
-    <div class="controls">
-      <button id="ambientBtn" class="ambient-on">🔊 Ambiyans: Açık</button>
-      <button id="switchAmbientBtn" class="secondary-btn">🔄 Ambiyansı Değiştir</button>
-    </div>
-    
-    <div class="sliders">
-      <div class="slider-container">
-        <label for="ambientVolume">Ambiyans Seviyesi:</label>
-        <input type="range" id="ambientVolume" min="0" max="50" value="15" step="1">
-        <span id="ambientVolumeValue">15%</span>
-      </div>
-      
-      <div class="slider-container">
-        <label for="voiceVolume">Ses Seviyesi:</label>
-        <input type="range" id="voiceVolume" min="50" max="100" value="90" step="1">
-        <span id="voiceVolumeValue">90%</span>
-      </div>
-    </div>
-  </div>
 
   <pre id="log" aria-live="polite" role="log"></pre>
 
   <script type="module" src="script.js"></script>
-  <script>
-    // Slider değerlerini gösteren yardımcı script
-    document.addEventListener('DOMContentLoaded', function() {
-      const ambientVolume = document.getElementById('ambientVolume');
-      const voiceVolume = document.getElementById('voiceVolume');
-      const ambientValue = document.getElementById('ambientVolumeValue');
-      const voiceValue = document.getElementById('voiceVolumeValue');
-      
-      if (ambientVolume && ambientValue) {
-        ambientVolume.oninput = function() {
-          ambientValue.textContent = this.value + '%';
-        };
-      }
-      
-      if (voiceVolume && voiceValue) {
-        voiceVolume.oninput = function() {
-          voiceValue.textContent = this.value + '%';
-        };
-      }
-    });
-  </script>
 </body>
+
 </html>
